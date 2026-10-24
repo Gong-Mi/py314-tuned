@@ -351,7 +351,7 @@ EOF
       # Instrumented build destined for the system prefix, so every `python3`
       # run on the device contributes to the profile.
       log "pass 1: instrumented build for the system prefix"
-      configure_build "$BUILD1" "$PREFIX" "-fprofile-generate=$PROF"
+      configure_build "$BUILD1" "$PREFIX" "-fprofile-generate=$PROF -mllvm -vp-counters-per-site=8"
       make -j"$JOBS"
       rm -rf "$WORK/sysroot-instr"; mkdir -p "$WORK/sysroot-instr"
       make install DESTDIR="$WORK/sysroot-instr"
