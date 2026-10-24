@@ -115,14 +115,21 @@ python3 -VV                             # 应显示 Clang 24 + main Oct 24 2026
 PGO 支持两段式：先装插桩版跑真实负载，再用收集到的 profile 出正式版。
 
 ```sh
-# 1) 插桩版（会提示 profile 目录）
+# 1) 构建并安装插桩版（替换系统 python；每个 python3 运行都会写 .profraw）
 ./build.sh --system --instrument-only
-#    按提示导出环境变量，例如写进 ~/.bashrc：
-#    export LLVM_PROFILE_FILE=$HOME/py314-tuned/work/pgo-profile/py-%p.profraw
-# 2) 正常使用一段时间（MCP、脚本、pytest……每个进程都会落一个 .profraw）
-# 3) 用收集到的 profile 出正式版
+dpkg -i dist/python_3.14.6-1+instr1_aarch64.deb
+# 2) 正常使用一段时间（MCP、脚本、pytest……）
+# 3) 查看/合并 profile
+./scripts/pgo_collect.sh work/pgo-profile            # 计数与体积
+./scripts/pgo_collect.sh work/pgo-profile --prune    # 合并后清掉 raw
+# 4) 用收集到的 profile 出正式版
 ./build.sh --system --profile-dir "$HOME/py314-tuned/work/pgo-profile"
+dpkg -i dist/python_3.14.6-1+tuned1_aarch64.deb
 ```
 
-注意：插桩版比正式版慢 2~3 倍，训练完务必换回正式版；`*.profraw` 越多合并越慢，
-可以只保留有代表性的那批。
+注意：
+
+- 插桩版比正式版慢 2~3 倍，训练完**务必**换回正式版（`dpkg -i dist/python_3.14.6-1+tuned1_aarch64.deb`）。
+- 每个 `python3` 进程都会写一个 `default_*.profraw`（本机约 0.2MB/进程）。MCP/Hermes 这类
+  频繁起进程的用法会积累很快，记得定期 `--prune`，否则几十万文件时 merge 会很慢。
+- 插桩版和正式版都必须带 `Py_GIL_DISABLED=0`、同版本源码，profile 才能复用。

@@ -57,6 +57,7 @@ LOG=$WORK/build.log
 DIST=$REPO_DIR/dist
 
 mkdir -p "$WORK" "$DIST"
+rm -rf "$BUILD1" "$BUILD2"   # stale configure caches from a previous prefix/flags
 
 export CC=${CC:-clang}
 export CXX=${CXX:-clang++}
@@ -270,6 +271,37 @@ EOF
   log "rollback: pkg install --reinstall python"
 }
 
+package_instr_deb() {
+  local root=$WORK/sysroot-instr
+  local deb=$DIST/python_${PY_VER}-1+instr1_aarch64.deb
+  mkdir -p "$root/DEBIAN"
+  for f in py3compile py3clean; do
+    [ -f "$PREFIX/bin/$f" ] && cp -a "$PREFIX/bin/$f" "$root$PREFIX/bin/$f" || true
+  done
+  [ -d "$PREFIX/lib/python3.14/debpython" ] && \
+    cp -a "$PREFIX/lib/python3.14/debpython" "$root$PREFIX/lib/python3.14/" || true
+  local size_kb; size_kb=$(du -sk "$root$PREFIX" | cut -f1)
+  cat > "$root/DEBIAN/control" <<EOF
+Package: python
+Version: ${PY_VER}-1+instr1
+Architecture: aarch64
+Maintainer: Gong-Mi <local>
+Installed-Size: $size_kb
+Depends: gdbm, libandroid-posix-semaphore, libandroid-support, libbz2, libcrypt, libexpat, libffi, liblzma, libsqlite, ncurses, ncurses-ui-libs, openssl, readline, zlib, zstd
+Provides: python3
+Replaces: python
+Section: devel
+Priority: optional
+Description: CPython ${PY_VER} instrumented (-fprofile-generate) for on-device PGO training
+ Every python3 run writes a profraw into $PROF. Install, use the device
+ normally, then finalise with --profile-dir.
+EOF
+  chmod 0755 "$root" "$root/DEBIAN"; chmod 0644 "$root/DEBIAN/control"
+  dpkg-deb --build --root-owner-group "$root" "$deb"
+  log "instrumented package: $deb ($(du -h "$deb" | cut -f1))"
+  log "install: dpkg -i $deb"
+}
+
 package_deb() {
   local root=$WORK/debroot
   rm -rf "$root"
@@ -315,17 +347,25 @@ EOF
     ls "$PROF"/*.profraw >/dev/null 2>&1 || { log "ERROR no .profraw in $PROFILE_DIR"; exit 1; }
     llvm-profdata merge -o "$PROF/py.profdata" "$PROF"/*.profraw
   else
+    if [ "$INSTR_ONLY" = 1 ]; then
+      # Instrumented build destined for the system prefix, so every `python3`
+      # run on the device contributes to the profile.
+      log "pass 1: instrumented build for the system prefix"
+      configure_build "$BUILD1" "$PREFIX" "-fprofile-generate=$PROF"
+      make -j"$JOBS"
+      rm -rf "$WORK/sysroot-instr"; mkdir -p "$WORK/sysroot-instr"
+      make install DESTDIR="$WORK/sysroot-instr"
+      rm -rf "$WORK/sysroot-instr$PREFIX/lib/python3.14/ensurepip/_bundled"
+      package_instr_deb
+      log "profile directory: $PROF (written automatically by the instrumented build)"
+      log "finalise later with: ./build.sh --system --profile-dir $PROF"
+      exit 0
+    fi
+
     log "pass 1: instrumented build"
     configure_build "$BUILD1" "$STAGE_INSTR" "-fprofile-generate=$PROF"
     make -j"$JOBS"
     make install
-
-    if [ "$INSTR_ONLY" = 1 ]; then
-      log "instrumented build installed; run your real workloads with"
-      log "  export LLVM_PROFILE_FILE=$PROF/py-%p.profraw"
-      log "then rerun with --profile-dir $PROF"
-      exit 0
-    fi
 
     log "training"
     rm -f "$PROF"/*.profraw
